@@ -63,48 +63,72 @@ module Threebot
 
   end
 
-  # to be overriden by your application
-  def threebot_login(env, email, username); end
+  @@seed = ""
+  @@threebot_login_ur = "https://login.threefold.me"
+  @@open_kyc_url = "https://openkyc.live/verification/verify-sei"
 
-  if !ENV.has_key?("SEED")
-    raise Threebot::MissingEnvironmentVariable.new "Missing Environment Variable SEED"
+  def self.set_seed(seed)
+    @@seed = seed
+  end
+
+  def self.set_threebot_login_url(url)
+    @@threebot_login_ur = url
+  end
+
+  def self.open_kyc_url(url)
+    @@open_kyc_url = url
+  end
+
+  if ENV.has_key?("SEED")
+    @@seed  = Base64.decode_string(ENV["SEED"])
   end
 
   # production "https://login.threefold.me"
-  if !ENV.has_key?("THREEBOT_LOGIN_URL")
-    raise Threebot::MissingEnvironmentVariable.new "Missing Environment Variable THREEBOT_LOGIN_URL"
+  if ENV.has_key?("@@threebot_login_ur")
+    @@threebot_login_ur = ENV["@@threebot_login_ur"]
   end
 
   # production "https://openkyc.live/verification/verify-sei"
-  if !ENV.has_key?("OPEN_KYC_URL")
-    raise Threebot::MissingEnvironmentVariable.new "Missing Environment Variable OPEN_KYC_URL"
+  if ENV.has_key?("open_kyc_url")
+    @@open_kyc_url = ENV["open_kyc_url"]
   end
 
-  SEED = Base64.decode_string(ENV["SEED"]).to_slice
-
-  SEKRET = Sodium::Sign::SecretKey.new seed: SEED
-
-  PUBLICKEY = SEKRET.public_key.to_curve25519
+  # to be overriden by your application
+  def threebot_login(env, email, username); end
+  
 
   # backend mode end points
   get "/threebot/login" do |env|
+      if @@seed  == ""
+        raise "SEED is missing, either set it in your module or as an environment variable"
+      end
+      secret = Sodium::Sign::SecretKey.new seed: Base64.decode_string(@@seed).to_slice
+      publickey = secret.public_key.to_curve25519
+      
       state = UUID.random().to_s.gsub('-', "")
       env.session.string("state", state)
             
       encoded = HTTP::Params.encode(
           {"appid" => env.request.host_with_port.not_nil!,
             "scope" =>  "{\"user\": true, \"email\": true}",
-            "publickey" => Base64.strict_encode(PUBLICKEY.to_slice),
+            "publickey" => Base64.strict_encode(publickey.to_slice),
             "redirecturl" => "/threebot/callback",
             "state" => state
           })
       
       env.response.status_code = 302
-      env.response.headers.add("Location", %(#{ENV["THREEBOT_LOGIN_URL"]}?#{encoded}&#{env.request.query_params.to_s}))
+      env.response.headers.add("Location", %(#{@@threebot_login_ur}?#{encoded}&#{env.request.query_params.to_s}))
       env
   end
   
   get "/threebot/callback" do |env|
+    if @@seed  == ""
+      raise "SEED is missing, either set it in your module or as an environment variable"
+    end
+
+      secret = Sodium::Sign::SecretKey.new seed: Base64.decode_string(@@seed).to_slice
+      publickey = secret.public_key.to_curve25519
+
       if ! env.request.query_params.has_key?("signedAttempt")
           env.response.status_code = 400
           env.response.print "Bad Request - signedAttempt param is missing"
@@ -116,7 +140,7 @@ module Threebot
 
       begin
           threebot_res = ThreebotResponse.from_json(env.request.query_params["signedAttempt"])
-          response = HTTP::Client.get %(#{ENV["THREEBOT_LOGIN_URL"]}/api/users/) + threebot_res.not_nil!.doubleName
+          response = HTTP::Client.get %(#{@@threebot_login_ur}/api/users/) + threebot_res.not_nil!.doubleName
           if ! response.status_code == 200
               env.response.print "Bad Request - can not get user public key"
               env
@@ -160,7 +184,7 @@ module Threebot
       nonce = Base64.decode(verified_data.data.nonce)
       ciphertext = Base64.decode(verified_data.data.ciphertext)
 
-      sekret_curve = SEKRET.to_curve25519
+      sekret_curve = secret.to_curve25519
       public_curve = user_public_key.not_nil!.to_curve25519
 
       sekret_curve.box public_curve do |box|
@@ -174,7 +198,7 @@ module Threebot
         data = UserData.from_json(String.new(decrypted))
         email = data.email.email
         sei = data.email.sei
-        response = HTTP::Client.post ENV["OPEN_KYC_URL"], headers: HTTP::Headers{"Content-Type" => "application/json"}, body: %({"signedEmailIdentifier": "#{sei}"})
+        response = HTTP::Client.post @@open_kyc_url, headers: HTTP::Headers{"Content-Type" => "application/json"}, body: %({"signedEmailIdentifier": "#{sei}"})
         if  response.status_code != 200
           halt env, status_code: 400, response: "Email not verified"
         end
@@ -186,6 +210,13 @@ module Threebot
   # frontend mode end points
   # call with /threebot/login/url?callback={/blah} where /blah is your frontend point
   get "/threebot/login/url" do |env|
+    if @@seed  == ""
+      raise "SEED is missing, either set it in your module or as an environment variable"
+    end
+
+    secret = Sodium::Sign::SecretKey.new seed: Base64.decode_string(@@seed).to_slice
+    publickey = secret.public_key.to_curve25519
+
     if ! env.request.query_params.has_key?("callback")
       env.response.status_code = 400
       env.response.print "Bad Request - callback query param is required"
@@ -200,11 +231,11 @@ module Threebot
     encoded = HTTP::Params.encode(
         {"appid" => env.request.host.not_nil!,
           "scope" =>  "{\"user\": true, \"email\": true}",
-          "publickey" => Base64.strict_encode(PUBLICKEY.to_slice),
+          "publickey" => Base64.strict_encode(publickey.to_slice),
           "redirecturl" => URI.decode(callback),
           "state" => state
         })
     
-    %(#{ENV["THREEBOT_LOGIN_URL"]}?#{encoded}&#{env.request.query_params.to_s}) 
+    %(#{@@threebot_login_ur}?#{encoded}&#{env.request.query_params.to_s}) 
   end
 end
