@@ -58,8 +58,9 @@ export THREEBOT_LOGIN_URL=https://login.threefold.me
 - provide `THREEBOT_LOGIN_URL` as environment variable , or use `set_threebot_login_url(url)` **Optional**
 - provide `OPEN_KYC_URL` as environment variable , otherwise use `set_open_kyc_url(url)` **Optional**
 
-- 
-  ```crystal
+## save session in bcdb
+
+```crystal
 require "kemal"
 require "kemal-session"
 require "kemal-session-bcdb"
